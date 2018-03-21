@@ -4,12 +4,12 @@ import time
 import math
 import traceback
 import random
-from pdb import set_trace as keyboard
+import operator
 
 HOST, PORT = "localhost", 17429
-USERNAME, PASSWORD = "a", "a"
+USERNAME, PASSWORD = "Algotraders", "spmuppar"
 # HOST, PORT = "localhost", 17429
-# USERNAME, PASSWORD = "a", "a"
+#USERNAME, PASSWORD = "a", "a"
 
 seen_backup = set()
 seen_wm_backup = set()
@@ -75,7 +75,6 @@ class Player:
         self.stack = set()
         self.seen = seen_backup
         self.seen_wm = seen_wm_backup
-        self.mine_set = set()
         self.notOurs = dict()
         self.data = None
 
@@ -90,6 +89,7 @@ class Player:
         self.sock.send((self.USERNAME + ' ' + self.PASSWORD + '\n').encode())
         response = self.sendCommand('CONFIGURATIONS')
         arr = response.split(' ')[1:]
+        print(response)
         self.config = dict(zip(arr[0::2], [float(x.strip()) for x in arr[1::2]]))
         return self
 
@@ -101,7 +101,7 @@ class Player:
         return self.sock.recv(4096).decode("utf-8")
 
     def processData(self, response, isStatus=True):
-        #try:
+        try:
             arr = response.split(' ')
             # print(arr)
 
@@ -154,7 +154,7 @@ class Player:
                 next = (float(arr[counter + 1 + 5 * i]), float(arr[counter + 2 + 5 * i]),
                         float(arr[counter + 3 + 5 * i]), float(arr[counter + 4 + 5 * i]), float(arr[counter + 5 + 5 * i]))
                 processed["wm"].append(next)
-                print ("worm holes ", next)
+                #print ("worm holes ", next)
                 self.seen_wm.add(next[0:5])  #x, y, radius, out_x, out_y
 
             processed["mines"].sort(key=lambda x: squaredDistance(x, processed["pos"]))
@@ -168,13 +168,16 @@ class Player:
             seen_wm_backup = self.seen_wm
 
             return processed
-        #except:
-            #return None
+        except:
+            return None
 
     def refreshData(self):
         response = self.sendCommand('STATUS')
         self.data = self.processData(response)
-        #keyboard()
+        while self.is_pos_wm(self.data["pos"]):
+            self.explore()
+            self.refreshData()
+            print ("exploring inside WM")
 
     def setAccel(self, angle, magnitude):
         self.sendCommand("ACCELERATE " + str(angle) + " " + str(magnitude))
@@ -187,21 +190,24 @@ class Player:
         response = self.sendCommand("SCAN " + str(pos[0]) + " " + str(pos[1]))
         if response.find("ERROR") == -1:
             print('scan', len(self.seen))
-            return self.processData(response, False)
+            res =self.processData(response, False)
+            if len(self.data["mines"]) > 0:
+                self.waypoint(self.data["mines"][0], self.scanNextMine)
+            return res
+
         else:
             return None
 
-    def is_pos_wm(self, pos):
+    def is_pos_wm(self, pos, tol=1):
         #proc_data = self.scanXY(pos)
         for wm in self.seen_wm:
             #keyboard()
             # wm[0], wm[1], wm[2] : x, y, radius of wm
-            dist = squaredDistance(pos, [wm[0], wm[1]])  #find distance between (x, y) and (wm_x, wm_y) 
+            dist = distance(pos, [wm[0], wm[1]])  #find distance between (x, y) and (wm_x, wm_y)
             if dist <= wm[2]:
-                print("MINE (", pos, " IS WITHIN THE RANGE OF WM")
+                #print("MINE (", pos, " IS WITHIN THE RANGE OF WM")
                 return True
         return False
-
 
     def isOurMine(self, minepos):
         for mine in self.data["ourmines"]:
@@ -244,6 +250,9 @@ class Player:
             vecTo = self.shortestVectorTo(target)
             vel = self.data["vel"]
             self.setAccel(angle(add(neg(perp(vecTo, vel)), scale(1 / distance(vecTo), vecTo))), 1)
+            if(distance(vecTo)>100):
+                print ("Threw a bomb",self.data['pos'])
+                self.setBomb(self.data['pos'],10)
 
             # if len(p.seen) >= 10:
             for mine in self.notOurs.keys():
@@ -275,30 +284,43 @@ class Player:
         vel = self.data["vel"]
 
         if (distance(vel) == 0):
-            self.setAccel(0.3, 1)
+            self.setAccel(random.random(), 1)
         else:
             self.setAccel(angle(vel), 1)
 
             bombdisp = scale((self.config["BOMBPLACERADIUS"]) / math.sqrt(squaredDistance(vel)), vel)
-            if len(self.data["mines"]) == 0:
-                self.setBomb(add(self.data["pos"], bombdisp), 30)
+            if random.random()<0.3 and len(self.data["mines"]) == 0:
+                self.setBomb(self.data["pos"], 0)
+            #if len(self.data["mines"]) == 0:
+                #self.setBomb(add(self.data["pos"], bombdisp), 30)
 
             self.scanRandom()
 
     def scanNextMine(self):
         if random.random() < len(self.seen) /(len(self.seen) *2):
             m = random.choice(tuple(self.seen))
-            while 1000 / distance(m, self.data[
-                "pos"]) < random.random():  # scanning needs to be weighted to be more likely for more nearby
+            while 1000 / distance(m, self.data["pos"]) < random.random():  # scanning needs to be weighted to be more likely for more nearby
                 m = random.choice(tuple(self.seen))
             self.scanXY(m)
         else:
             self.scanRandom()
 
+    def inTopScore(self, name):
+        response = self.sendCommand("SCOREBOARD")
+        arr = response.split(' ')
+        n = len(arr)//3
+        p={}
+        for i in range(n):
+            p[arr[i*3]]=arr[i*3+1]
+        newP = dict(sorted(p.items(), key=operator.itemgetter(1), reverse=True)[:3])
+        if name in newP:
+            return True
+        return False
+
     def waypointToNearest(self):
         if len(self.notOurs) > 0:
             target = min(self.notOurs.keys(), key=lambda mine: squaredDistance(mine, self.data["pos"]) * (
-            0.1 if self.notOurs[mine] == 'exodia' else 1))
+            0.1 if self.inTopScore(self.notOurs[mine]) else 1))
             if distance(target, self.data["pos"]) > 1500:
                 diff = sub(target, self.data["pos"])
                 bombdisp = scale((self.config["BOMBPLACERADIUS"]) / math.sqrt(squaredDistance(diff)), diff)
@@ -307,46 +329,24 @@ class Player:
             self.waypoint(target, self.scanNextMine)
         else:
             if(random.random() < 0.5):
-                self.explore()
+                self.scanNextMine()
             else:
-                self.refreshData()
+                if(random.random()<0.5):
+                    self.refreshData()
+                else:
+                    self.explore()
 
-            # So memory.
-            # We are going to explore the map in an optimal way (with motion and with scans).
-            # The goal is to explore 80% of the area of the field.
-            # Once this occurs, we switch to a strategy of circulation.
-            # Scan each known location (in continuous linear sequence) to figure out if the mine is still ours. Add to a list if not.
-            # Greedily waypoint to the nearest mine that isn't ours.
-            # Of course, exploration is still occurring, but we're just not prioritizing it.
-
-            # to improve: waypoint cannot change if there's a much closer candidate
-            # have some other heuristics like current velocity direction
-            # and more prioritous enemies (higher rank)
-            # recovery - cache in file
-            # leave an area after hanging around too long - randomly boost self away?
-            # or unweight it if there's people nearby
-
-
-# toroidal is broken
-# allow waypointing to other things on the way? not seeing anything while waypointing - have a queue
-# remember past points and check them at some point - after we hit a set number of "seen" bombs in the set (sortedset based on distance from current?)
-# if waypoint keep going
-# bomb it if people are nearby (or leave a parting bomb)
-# sidescan
-# predictive bomb positioning - for ourselves and for others
-# stop dropping bombs at terminal velocity
-# ('Error', "invalid literal for float(): 3750'")
 
 while True:
     try:
         with Player(HOST, PORT, USERNAME, PASSWORD) as p:
             p.setAccel(0.3, 1)
             time.sleep(1)
-            while len(p.seen) < 7:
+            while len(p.seen) < 4:
                 p.refreshData()
-                #print(self.seen_wm)
+                print(p.data)
                 # print(math.sqrt(squaredDistance(p.data["vel"])))
-                if len(p.data["mines"]) > 0:
+                if len(p.data["mines"]) >0:
                     p.waypoint(p.data["mines"][0], p.scanNextMine)
                     # for index, mine in enumerate(p.data["mines"]):
                     #  if index < (len(p.data["mines"]) - 1):
